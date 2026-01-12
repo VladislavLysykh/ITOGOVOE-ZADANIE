@@ -1,3 +1,4 @@
+# CКРИНШОТЫ С РЕЗУЛЬТАТАМИ РАБОТЫ: https://disk.yandex.ru/i/B25vUlqw6kqlXg
 # импортированы все нужные библиотеки
 import requests
 import pandas as pd
@@ -307,4 +308,4 @@ if __name__ == "__main__":
 
     print("\nСканирование завершено. Отчёты находятся в папке 'ОТЧЕТЫ'.")
 
-# Изображения: https://disk.yandex.ru/i/B25vUlqw6kqlXg
+# Изображения: https://disk.yandex.ru/i/B25vUlqw6kqlXg   (СКРИНШОТЫ!!!!)
