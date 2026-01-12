@@ -1,0 +1,310 @@
+# импортированы все нужные библиотеки
+import requests
+import pandas as pd
+import json
+import matplotlib
+matplotlib.use('Agg')  # добавил по рекомендации ИИ, так как выдавал ошибку с tlk
+import matplotlib.pyplot as plt
+import os
+import time
+from datetime import datetime
+
+# добавлены ключи для VIRUSTOTAL и VULNERS
+VIRUSTOTAL_API_KEY = "27b0dee0655ec5e66a252e63cd889e5c0750216e933389c69df7f2e7c6fe4964"
+VULNERS_API_KEY = "2X9XWVPOJ1IBG1JLSWQ7A0F6G751WJNILSZRN5SSAK67QD9AW4ODDHSHFQO48L79"
+
+LOG_DIR = "logs"
+REPORT_DIR = "reports"
+os.makedirs(LOG_DIR, exist_ok=True)
+os.makedirs(REPORT_DIR, exist_ok=True)
+
+# IP-адреса для проверки
+TEST_IPS = [
+    "140.228.21.36", "45.155.205.180", "185.130.104.75", "91.221.74.182",
+    "194.44.26.100", "103.21.244.100", "212.70.149.120", "82.102.25.111"
+]
+# добавлен список уязвимостей
+cve_id = [
+    "CVE-2024-21623",
+"CVE-2024-21624",
+"CVE-2024-2997",
+"CVE-2024-3883",
+"CVE-2024-43444",
+"CVE-2024-4981",
+"CVE-2024-5080",
+"CVE-2024-6057",
+"CVE-2024-7355",
+"CVE-2024-8248",
+    "CVE-2024-1096",
+    "CVE-2024-1198",
+    "CVE-2024-1227",
+    "CVE-2024-1342",
+    "CVE-2024-1522",
+    "CVE-2024-1752",
+    "CVE-2024-1840",
+    "CVE-2024-1939",
+    "CVE-2024-2005",
+    "CVE-2024-2041",
+    "CVE-2024-2254",
+    "CVE-2024-2345",
+    "CVE-2024-2495",
+    "CVE-2024-2512",
+    "CVE-2024-2660",
+    "CVE-2024-2729",
+    "CVE-2024-2879",
+    "CVE-2024-3003",
+    "CVE-2024-3143",
+    "CVE-2024-3244",
+    "CVE-2024-3316",
+    "CVE-2024-3407",
+    "CVE-2024-3518",
+    "CVE-2024-3640",
+    "CVE-2024-3730",
+    "CVE-2024-3840",
+    "CVE-2024-3945",
+    "CVE-2024-4040",
+    "CVE-2024-4144",
+    "CVE-2024-4242"
+],
+
+
+# --- Проверка  в VirusTotal ---
+def check_ip_virustotal(ip):
+    url = f"https://www.virustotal.com/api/v3/ip_addresses/{ip}"
+    headers = {"x-apikey": VIRUSTOTAL_API_KEY}
+
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        print(f"VirusTotal response for {ip}: {response.status_code}, {response.text[:200]}") # для построчной информации
+
+        if response.status_code == 200:
+            data = response.json()
+# для анализа выбираем характеритики: вредоносный, подозрительный, безобидный, сумма
+            if "data" in data and "last_analysis_stats" in data["data"]:
+                stats = data["data"]["last_analysis_stats"]
+                return {
+                    "ip": ip,
+                    "malicious": stats["malicious"],
+                    "suspicious": stats["suspicious"],
+                    "harmless": stats["harmless"],
+                    "undetected": stats["undetected"],
+                    "threat_score": stats["malicious"] + stats["suspicious"]
+                } #пометка при отсутствии сведений, т.е. только голоса пользователей
+            elif "data" in data and "attributes" in data["data"] and "total_votes" in data["data"]["attributes"]:
+                votes = data["data"]["attributes"]["total_votes"]
+                return {
+                    "ip": ip,
+                    "malicious": votes.get("malicious", 0),
+                    "suspicious": 0,
+                    "harmless": votes.get("harmless", 0),
+                    "undetected": 0,
+                    "threat_score": votes.get("malicious", 0),
+                    "note": "Только голоса (нет сканов)"
+                }
+            else:
+                return {"ip": ip, "error": "No analysis or votes"}
+        elif response.status_code == 404:
+            return {"ip": ip, "error": "IP not found"}
+        else:
+            return {"ip": ip, "error": f"HTTP {response.status_code}"}
+    except Exception as e:
+        return {"ip": ip, "error": str(e)}
+
+
+# --- Поиск уязвимостей в Vulners ---
+def search_vulnerability_vulners(cve):
+    url = "https://vulners.com/api/v3/search/lucene/"
+    params = {
+        "query": f"cvelist:{cve}",
+        "apiKey": VULNERS_API_KEY
+    }
+
+    try:
+        response = requests.get(url, params=params, timeout=10)
+        if response.status_code == 200:
+            data = response.json()
+            if data["result"] == "OK" and data["data"]["total"] > 0:
+                article = data["data"]["hits"][0]
+                cvss = article.get("cvss", {}).get("score", 0.0)
+                return {
+                    "cve": cve,
+                    "title": article["title"],
+                    "cvss": cvss,
+                    "severity": article.get("cvss", {}).get("severity", "Unknown"),
+                    "description": (article["description"] or "")[:200] + "..."
+                }
+        return {"cve": cve, "error": "not_found"}
+    except Exception as e:
+        return {"cve": cve, "error": str(e)}
+
+
+# --- Анализ угроз ---
+def analyze_threats():
+    ip_results = []
+    vuln_results = []
+
+    print("1.Начинаем провекру IP  через VirusTotal...")
+    for ip in TEST_IPS:
+        result = check_ip_virustotal(ip)
+        ip_results.append(result)
+        time.sleep(15)  # обходим лимиты на всякий случай
+
+    print("2. Начинаем поиcк уязимостей через VirusTotal...")
+    for cve in cve_id:
+        result = search_vulnerability_vulners(cve)
+        vuln_results.append(result)
+        time.sleep(1)  # обходим лимиты на всякий случай
+
+    return ip_results, vuln_results
+
+
+# --- Реагирование на угрозы ---
+def respond_to_threats(ip_results, vuln_results):
+    print("\n" + " = "*70)
+    print("РЕАГИРОВАНИЕ НА УГРОЗЫ!!!!")
+    print("=" * 70)
+
+    #  IP с угрозой
+    threatened_ips = [i for i in ip_results if "error" not in i and i["threat_score"] > 0]
+    if threatened_ips:
+        print(f"[ТРЕВОГА!!!] Найдено {len(threatened_ips)} подозрительных IP:")
+    for item in threatened_ips:
+        print(f"  {item['ip']} -> Зловредных: {item['malicious']}, подозрительных: {item['suspicious']}")
+    else:
+        print("Подозрительных IP не выявлено.")
+
+    # Критические уязвимости (CVSS ≥ 7.0)
+    critical_vulns = [
+        v for v in vuln_results
+        if "cvss" in v and isinstance(v["cvss"], (int, float)) and v["cvss"] >= 7.0
+    ]
+    if critical_vulns:
+        print(f"\n[ТРЕВОГА] Найдено {len(critical_vulns)} критических уязвимостей (CVSS ≥ 7.0):")
+        for v in critical_vulns:
+            print(f"  {v['cve']}: {v['title']} (CVSS: {v['cvss']}, {v['severity']})")
+            print(f"  Детально: {v['description']}\n")
+    else:
+        print("\nКритических уязвимостей (CVSS ≥ 7.0) не обнаружено.")
+
+    # Важные уязвимости (4.0 ≤ CVSS < 7.0)
+    important_vulns = [
+        v for v in vuln_results
+        if "cvss" in v and isinstance(v["cvss"], (int, float)) and 4.0 <= v["cvss"] < 7.0
+    ]
+    if important_vulns:
+        print(f"Найдено {len(important_vulns)} важных уязвимостей (4.0 ≤ CVSS < 7.0):")
+    for v in important_vulns:
+        print(f"  {v['cve']}: {v['title']} (CVSS: {v['cvss']})")
+
+def generate_report(ip_results, vuln_results):
+
+    # Отчёт по IP
+    if ip_results:
+        ip_df = pd.DataFrame(ip_results)
+        ip_csv = os.path.join(REPORT_DIR, "ip_report.csv")
+        ip_df.to_csv(ip_csv, index=False, encoding="utf-8-sig")  # utf-8-sig для Excel
+        print(f"\nОтчёт по IP (VT) сохранён: {ip_csv}")
+    else:
+        print("\nНет данных для отчёта по IP.")
+
+    # Отчёт по уязвимостям
+    if vuln_results:
+        vuln_df = pd.DataFrame(vuln_results)
+        vuln_csv = os.path.join(REPORT_DIR, "vuln_report.csv")
+        vuln_df.to_csv(vuln_csv, index=False, encoding="utf-8-sig")
+        print(f"Отчёт по уязвимостям (V) сохранён: {vuln_csv}")
+    else:
+        print("Нет данных для отчёта по уязвимостям.")
+
+
+    # График CVSS (при наличии баллов)
+    cvss_scores = [
+        v["cvss"] for v in vuln_results
+        if "cvss" in v and isinstance(v["cvss"], (int, float)) and v["cvss"] > 0
+    ]
+    if cvss_scores:
+        plt.figure(figsize=(8, 5))
+        plt.hist(cvss_scores, bins=5, color='crimson', edgecolor='black', alpha=0.7)
+        plt.title("Распределение CVSS‑баллов для уязвимостей", fontsize=14)
+        plt.xlabel("CVSS Score", fontsize=12)
+        plt.ylabel("Количество уязвимостей", fontsize=12)
+        plt.grid(axis='y', alpha=0.3)
+        plot_path = os.path.join(REPORT_DIR, "cvss_distribution.png")
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"График CVSS сохранён: {plot_path}")
+    else:
+        print("Нет данных для графика CVSS.")
+def plot_top_ips(ip_results):
+
+    # График по IP
+    try:
+        # Фильтр IP без ошибок и с подходящим threat_score
+        valid_ips = [
+            item for item in ip_results
+            if "error" not in item and "threat_score" in item
+        ]
+        if not valid_ips:
+            print("Нет подходящих IP для построения графика.")
+            return
+
+        # Сортировка
+        sorted_ips = sorted(valid_ips, key=lambda x: x["threat_score"], reverse=True)
+        top_5 = sorted_ips[:5]
+
+
+        # Данные для графика
+        ips = [item["ip"] for item in top_5]
+        scores = [item["threat_score"] for item in top_5]
+
+        # Построение графика
+        plt.figure(figsize=(10, 6))
+        bars = plt.bar(ips, scores, color='steelblue', edgecolor='black', alpha=0.8)
+
+
+        # Заполняем график
+        for bar, score in zip(bars, scores):
+            plt.text(
+                bar.get_x() + bar.get_width() / 2,
+                bar.get_height() + 0.1,
+                str(score),
+                ha='center',
+                va='bottom',
+                fontsize=10
+            )
+
+        plt.title("Топ‑5 IP по уровню угрозы (threat_score)", fontsize=14, fontweight='bold')
+        plt.xlabel("IP-адрес", fontsize=12)
+        plt.ylabel("Уровень угрозы (сумма)", fontsize=12)
+        plt.ylim(1, max(scores) * 1.15)
+        plt.grid(axis='y', linestyle='--', alpha=0.3)
+        plt.xticks(rotation=45, ha='right')
+
+        # Сохранение графика
+        plot_path = os.path.join(REPORT_DIR, "top_5_ips.png")
+        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.close()
+        print(f"График топ‑5 IP сохранён: {plot_path}")
+
+
+    except Exception as e:
+        print(f"Ошибка при построении графика: {e}")
+# Общая схема
+if __name__ == "__main__":
+    print("Запуск сканера...\n")
+
+    # 1. Анализ Данных
+    ip_data, vuln_data = analyze_threats()
+
+    # 2. Реагирование
+    respond_to_threats(ip_data, vuln_data)
+
+    # 3. Отчёты
+    generate_report(ip_data, vuln_data)
+
+    # 4. График топ‑5 IP
+    plot_top_ips(ip_data)
+
+    print("\nСканирование завершено. Отчёты находятся в папке 'ОТЧЕТЫ'.")
+
+# Изображения: https://disk.yandex.ru/i/B25vUlqw6kqlXg
